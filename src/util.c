@@ -76,17 +76,16 @@ size_t read_file(const char *path, void *buf, size_t len){
 
 	if (((count < len) && !feof(fp)) || ferror(fp)){
 		err("Errore di lettura per %s", path);
-		goto fail;
+		goto fail_fp;
 	} else if ((count == len) && !feof(fp)){
 		fprintf(stderr, "Attenzione: file letto solo per %ld byte\n", len);
 	}
 
 	fclose(fp);
 	return count;
-	
+
+ fail_fp:
+	fclose(fp);
  fail:
-	if (fp){
-		fclose(fp);
-	}
 	return 0;
 }

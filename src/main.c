@@ -19,55 +19,13 @@
 
 #include "util.h"
 #include "chip8.h"
+#include "ui.h"
 
-/* Dimensione in pixel reali dello schermo CHIP-8
- * 1: 64x32
- * 5: 320x160
- * 8: 512x256
- * 10: 640x320
- * 15: 960x480
- * 16: 1024x512
- * 20: 1280x640 */
-#define GFX_SCALE 16
-
-/* Tabella di conversione tasti PC a tasti CHIP-8
- *
- * CHIP-8:    PC:
- * 1 2 3 C    1 2 3 4
- * 4 5 6 D     q w e r
- * 7 8 9 E      a s d f
- * A 0 B F       z x c v
- */
-static int keymap[16] = {
-	SDL_SCANCODE_X, /* FIXME: Apparentemente X non funziona */
-	SDL_SCANCODE_1,
-	SDL_SCANCODE_2,
-	SDL_SCANCODE_3,
-	SDL_SCANCODE_Q,
-	SDL_SCANCODE_W,
-	SDL_SCANCODE_E,
-	SDL_SCANCODE_A,
-	SDL_SCANCODE_S,
-	SDL_SCANCODE_D,
-	SDL_SCANCODE_Z,
-	SDL_SCANCODE_C,
-	SDL_SCANCODE_4,
-	SDL_SCANCODE_R,
-	SDL_SCANCODE_F,
-	SDL_SCANCODE_V
-};
-
-static int init_sdl(SDL_Window **win, SDL_Renderer **ren, SDL_Texture **tex);
 static void emulation_loop(chip8_machine_t *chip8);
-
-static SDL_Window *win;
-static SDL_Renderer *ren;
-static SDL_Texture *tex;
-
-static uint32_t fg, bg;
 
 int main(int argc, char **argv){
 	uint8_t buf[0xE00];
+	uint32_t fg, bg;
 	size_t count;
 	chip8_machine_t chip8;
 
@@ -95,111 +53,31 @@ int main(int argc, char **argv){
 	chip8_init(&chip8);
 	chip8_load(&chip8, buf, 0xE00);
 	
-	if (init_sdl(&win, &ren, &tex)){
+	if (ui_init_sdl()){
 		return 1;
 	}
+
+	ui_set_colors(fg, bg);
 	
 	emulation_loop(&chip8);
 
-	SDL_DestroyTexture(tex);
-	SDL_DestroyRenderer(ren);
-	SDL_DestroyWindow(win);
-	SDL_Quit();
+	ui_quit_sdl();
 	
 	return 0;
 }
 
-static int init_sdl(SDL_Window **win, SDL_Renderer **ren, SDL_Texture **tex){
-	*win = NULL;
-	*ren = NULL;
-	*tex = NULL;
-	
-	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)){
-		fprintf(stderr, "Errore init SDL: %s\n", SDL_GetError());
-		goto error;
-	}
-
-	*win = SDL_CreateWindow("CHIP-8",
-							SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-							64 * GFX_SCALE, 32 * GFX_SCALE,
-							SDL_WINDOW_SHOWN);
-	if (!win){
-		fprintf(stderr, "Errore creazione finestra: %s\n", SDL_GetError());
-		goto error;
-	}
-
-	*ren = SDL_CreateRenderer(*win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-	if (!ren){
-		fprintf(stderr, "Errore creazione renderer: %s\n", SDL_GetError());
-		goto error;
-	}
-
-	*tex = SDL_CreateTexture(*ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, 64, 32);
-	if (!tex){
-		fprintf(stderr, "Errore creazione texture: %s\n", SDL_GetError());
-		goto error;
-	}
-
-	/* TODO: Init audio */
-
-	return 0;
-
- error:
-	if (*ren){
-		SDL_DestroyRenderer(*ren);
-	}
-	if (*win){
-		SDL_DestroyWindow(*win);
-	}
-	SDL_Quit();
-	return 1;
-}
-
-/* TODO: File separato per gestire SDL2 */
 static void emulation_loop(chip8_machine_t *chip8){
-	SDL_Event ev;
-	int i, j, beep;
+	int beep;
 	long last, delta, cdelta;
-	uint8_t keys[16];
-	const Uint8 *sdl_keys;
-    uint32_t *pixels;
-	int pitch;
-
-	sdl_keys = SDL_GetKeyboardState(NULL);
+	
 	last = SDL_GetTicks();
 	cdelta = beep = 0;
 
 	while (1){
-		while (SDL_PollEvent(&ev)){
-			switch (ev.type){
-			case SDL_QUIT:
-				goto quit_loop;
-			case SDL_KEYDOWN:
-				if (ev.key.repeat){
-					break;
-				}
-				logd("KEYDOWN");
-				if (ev.key.keysym.sym == SDLK_ESCAPE){
-				    chip8->pc = chip8->sp = 0;
-					memset(chip8->vram, 0, 256);
-				}
-				
-				for (i=0; i<16; i++){
-					if (ev.key.keysym.scancode == keymap[i]){
-						chip8_pressed(chip8, i);
-						break;
-					}
-				}
-				/* fall-through */
-			case SDL_KEYUP:
-				for (i=0; i<16; i++){
-					keys[i] = sdl_keys[keymap[i]];
-				}
-				chip8_update_keys(chip8, keys);
-				break;
-			}
+		if (ui_input(chip8)){
+			break;
 		}
-
+		
 		delta = SDL_GetTicks() - last;
 		cdelta += delta;
 		last = delta + last;
@@ -219,23 +97,7 @@ static void emulation_loop(chip8_machine_t *chip8){
 		chip8_exec(chip8);
 	    
 		if (chip8->drawn){
-			SDL_LockTexture(tex, NULL, (void **) &pixels, &pitch);
-			/* Il display CHIP-8 è grande 64x32 pixel, ogni pixel è
-			 * monocromatico ed è rappresentato da un singolo bit,
-			 * dunque un byte contiene una fila di 8 pixel, per un
-			 * totale di 8 byte per riga, 256 per l'intero display. */
-
-			/* Per ogni byte */
-			for (i=0; i<256; i++){
-				/* Per ogni bit */
-				for (j=0; j<8; j++){
-					pixels[(i * 8 + j)] = (chip8->vram[i] & (1 << (7 - j))) ? fg : bg;
-				}
-			}
-		
-			SDL_UnlockTexture(tex);
-			SDL_RenderCopy(ren, tex, NULL, NULL);
-			SDL_RenderPresent(ren);
+			ui_render(chip8);
 
 			/* Qui non c'è sleep perché in init_sdl() abbiamo chiesto
 			 * un renderer con VSYNC, questo significa che avremo una
@@ -246,7 +108,4 @@ static void emulation_loop(chip8_machine_t *chip8){
 			SDL_Delay(8);
 		}
 	}
-
-	/* TODO: Soluzione più pulita */
- quit_loop: {}
 }
